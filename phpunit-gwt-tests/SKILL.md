@@ -73,3 +73,7 @@ Done when every test method in the file being written or touched has `// Given`,
 - For mock/collaborator-heavy tests (the rare case in this repo, since feature tests must not
   mock the service layer per CLAUDE.md) and multi-step Given chains, see
   `references/examples.md`.
+- For general testing guidelines (Unit/Feature/Integration namespaces, mandatory feature
+  tests, `Tests\TestData` fixture classes, Mockery argument verification, teardown), see
+  `references/testing-guidelines.md`. Where it conflicts with `CLAUDE.md`,
+  `CLAUDE.md` wins.
