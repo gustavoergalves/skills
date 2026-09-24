@@ -2,8 +2,6 @@
 name: "jira-to-md"
 description: "Fetch one or more Jira tickets and create jira/<TICKET-ID>/index.md per ticket, downloading any description images into the same folder."
 argument-hint: "One or more Jira ticket IDs (e.g. SK-91 SK-92 SK-104)"
-metadata:
-  author: "gustavo.reis@99x.io"
 user-invocable: true
 disable-model-invocation: false
 ---
