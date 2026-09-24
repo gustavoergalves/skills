@@ -15,9 +15,15 @@ Create detailed Product Requirements Documents that are clear, actionable, and s
 1. Receive a feature description from the user
 2. Ask 3-5 essential clarifying questions (with lettered options)
 3. Generate a structured PRD based on answers
-4. Save to `tasks/prd-[feature-name].md`
+4. Save to `data/tasks/prd-[feature-name].md`
 
 **Important:** Do NOT start implementing. Just create the PRD.
+
+---
+
+## Output root
+
+All files this skill writes go under `data/` at the root of the project the agent is running in (the current working directory) — never the project root or any other folder. Create `data/` (and `data/tasks/`) if it does not exist.
 
 ---
 
@@ -135,7 +141,7 @@ The PRD reader may be a junior developer or AI agent. Therefore:
 ## Output
 
 - **Format:** Markdown (`.md`)
-- **Location:** `tasks/`
+- **Location:** `data/tasks/`
 - **Filename:** `prd-[feature-name].md` (kebab-case)
 
 ---
@@ -238,4 +244,4 @@ Before saving the PRD:
 - [ ] User stories are small and specific
 - [ ] Functional requirements are numbered and unambiguous
 - [ ] Non-goals section defines clear boundaries
-- [ ] Saved to `tasks/prd-[feature-name].md`
+- [ ] Saved to `data/tasks/prd-[feature-name].md`

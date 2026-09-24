@@ -1,6 +1,6 @@
 ---
 name: "jira-to-md"
-description: "Fetch one or more Jira tickets and create jira/<TICKET-ID>/index.md per ticket, downloading any description images into the same folder."
+description: "Fetch one or more Jira tickets and create data/jira/<TICKET-ID>/index.md per ticket, downloading any description images into the same folder."
 argument-hint: "One or more Jira ticket IDs (e.g. SK-91 SK-92 SK-104)"
 metadata:
   author: "gustavo.reis@99x.io"
@@ -10,7 +10,11 @@ disable-model-invocation: false
 
 # Jira to Markdown
 
-Fetch Jira ticket(s) by ID and create a `jira/<TICKET-ID>/index.md` file for each one in the current project. Each ticket gets its own folder so related files (downloaded images, notes, sub-docs) live alongside `index.md`.
+Fetch Jira ticket(s) by ID and create a `data/jira/<TICKET-ID>/index.md` file for each one in the current project. Each ticket gets its own folder so related files (downloaded images, notes, sub-docs) live alongside `index.md`.
+
+## Output root
+
+All files this skill writes go under `data/` at the root of the project the agent is running in (the current working directory) — never the project root or any other folder. Create `data/` if it does not exist.
 
 ## Arguments
 
@@ -45,10 +49,10 @@ If no arguments are provided, ask the user for the ticket ID(s) before proceedin
      ```
    - Read its real dimensions with `file "<tmp>"` (e.g. `PNG image data, 1691 x 927`).
 
-   Then walk the description's image refs in document order and match each ref's `width`x`height` to the attachment with the same dimensions. Save each matched file into `jira/<TICKET-ID>/` as `image-01.<ext>`, `image-02.<ext>`, ... (N = order of appearance in the description; `<ext>` from the mimeType, e.g. `png`/`jpg`). If two images share identical dimensions, fall back to attachment document order for that group and note the ambiguity in the summary.
+   Then walk the description's image refs in document order and match each ref's `width`x`height` to the attachment with the same dimensions. Save each matched file into `data/jira/<TICKET-ID>/` as `image-01.<ext>`, `image-02.<ext>`, ... (N = order of appearance in the description; `<ext>` from the mimeType, e.g. `png`/`jpg`). If two images share identical dimensions, fall back to attachment document order for that group and note the ambiguity in the summary.
 
 4. **Write the markdown file**
-   Write `jira/<TICKET-ID>/index.md` (create the `jira/<TICKET-ID>/` folder if it does not exist) with this structure:
+   Write `data/jira/<TICKET-ID>/index.md` (create the `data/jira/<TICKET-ID>/` folder if it does not exist) with this structure:
 
    ```markdown
    # <TICKET-ID>: <summary>
@@ -67,7 +71,7 @@ If no arguments are provided, ask the user for the ticket ID(s) before proceedin
 
 ## Rules
 
-- Never overwrite an existing file without warning. If `jira/<TICKET-ID>/index.md` already exists, ask the user whether to overwrite it. Do not delete or touch other files in the ticket folder.
+- Never overwrite an existing file without warning. If `data/jira/<TICKET-ID>/index.md` already exists, ask the user whether to overwrite it. Do not delete or touch other files in the ticket folder.
 - Match images by pixel dimensions, not by attachment array order (the blob Media UUID is not the attachment id). Never guess a mapping; if no attachment dimension matches a ref, leave the ref in place and flag it in the summary.
 - Keep images in their original format (PNG stays PNG); do not convert or resize.
 - Do not add extra sections (acceptance criteria, subtasks, attachment tables) unless the user explicitly asks for them.
