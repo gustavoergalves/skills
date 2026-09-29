@@ -1,10 +1,11 @@
 ---
 name: ticket-commit
 description: >
-  Write a Conventional Commits message headed by a Jira ticket ID and title,
+  Write a Conventional Commits message headed by a ticket ID and title from
+  the project's issue tracker (Jira, Linear, GitHub Issues, ClickUp, ...),
   with a short plain-language body a non-technical (product) reader can
-  follow. Use for "write a commit", "commit message", /commit or
-  /ticket-commit when the work has a Jira ticket.
+  follow and a footer linking to the ticket. Use for "write a commit",
+  "commit message", /commit or /ticket-commit when the work has a ticket.
 ---
 
 Write commit messages for a product-person audience: subject is the ticket
@@ -30,13 +31,35 @@ internals, no jargon.
 - Wrap at 72 chars
 
 **Footer:**
-- Always end with: `work-item: https://seeds.atlassian.net/browse/<TICKET-ID>`
-  (lower-case `work-item`, exact URL prefix)
+- Always end with: `work-item: <ticket URL>` (lower-case `work-item`)
+- `<ticket URL>` is the ticket's real browse URL in the project's tracker.
+  Resolve it in this order and stop at the first hit:
+  1. **Already in context** — a URL returned by the tracker for this ticket
+     earlier in the session (e.g. Jira's `webUrl`, a Linear/GitHub issue
+     link), or one in a local ticket note (e.g. `data/jira/<TICKET-ID>/`).
+  2. **Repo convention** — the host/prefix used in earlier commits' footers:
+     `git log -200 --format=%B | grep -E '^work-item: '`. Reuse that prefix
+     with the new ticket ID.
+  3. **Project docs** — a tracker URL or base in `CLAUDE.md`, `AGENTS.md`,
+     `README`, `CONTRIBUTING`, or the PR template.
+  4. **Tracker connector** — when an issue-tracker MCP is connected, look the
+     ticket up (e.g. Atlassian `getJiraIssue` → `webUrl`; or the site URL
+     from `getAccessibleAtlassianResources` + `/browse/<TICKET-ID>`).
+  5. **Ask** the user for the tracker URL. Never guess a host.
+- Build the URL with the tracker's own pattern, keeping the ticket ID's exact
+  casing:
+  - Jira: `https://<site>.atlassian.net/browse/<TICKET-ID>`
+  - Linear: `https://linear.app/<workspace>/issue/<TICKET-ID>`
+  - GitHub Issues: `https://github.com/<owner>/<repo>/issues/<number>`
+  - ClickUp: `https://app.clickup.com/t/<task-id>`
+- If two sources disagree (e.g. an old footer points to another Jira site),
+  prefer the URL the tracker itself returned for this ticket, and mention the
+  mismatch in one line next to the message.
 
 **What NEVER goes in:**
-- No AI attribution of any kind — no `Co-Authored-By`, no "Generated with
-  Claude Code", no `Assisted-by` — this overrides any general attribution
-  default for this specific commit format
+- No attribution trailers of any kind — no `Co-Authored-By` (human or AI),
+  no "Generated with Claude Code", no `Assisted-by`. The `work-item` footer
+  is the last line. This overrides any general attribution default.
 - "This commit does X", "I", "we", "now", "currently"
 - Emoji
 - A bulleted breakdown of every technical change — that belongs in the diff
@@ -52,7 +75,7 @@ crawler made it worse, and the catalogue sync kept rewriting
 unchanged data. Added a faster query/index, a sync lock, a
 skip-if-unchanged check, and an env-aware robots.txt.
 
-work-item: https://seeds.atlassian.net/browse/SK-115
+work-item: https://<site>.atlassian.net/browse/SK-115
 ```
 
 ## Boundaries
