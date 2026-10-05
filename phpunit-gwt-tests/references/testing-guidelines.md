@@ -1,7 +1,7 @@
 # Testing Guidelines
 
 General conventions for Laravel/PHPUnit test suites, with every example in Given/When/Then
-shape. If anything here conflicts with the repo's `CLAUDE.md` (e.g. test method naming),
+shape (extracted `given*`/`when*`/`then*` steps, no GWT comments). If anything here conflicts with the repo's `CLAUDE.md` (e.g. test method naming),
 `CLAUDE.md` wins.
 
 ## Test types and namespaces
@@ -21,25 +21,40 @@ The namespace after the type prefix mirrors the class under test:
 namespace Tests\Feature\Http\Controllers;
 
 use Illuminate\Foundation\Testing\WithFaker;
+use Illuminate\Testing\TestResponse;
 use Tests\TestCase;
 
 class UserControllerTest extends TestCase
 {
     use WithFaker;
 
-    public function test_stores_user_data_correctly(): void
+    private TestResponse $response;
+
+    public function testStoresUserDataCorrectly(): void
     {
-        // Given
-        $data = [
+        $data = $this->givenUserData();
+
+        $this->whenUserIsSubmitted($data);
+
+        $this->thenUserIsStoredAndRedirectedHome($data);
+    }
+
+    private function givenUserData(): array
+    {
+        return [
             'name' => $this->faker->name,
             'email' => $this->faker->safeEmail,
         ];
+    }
 
-        // When
-        $response = $this->post('/user', $data);
+    private function whenUserIsSubmitted(array $data): void
+    {
+        $this->response = $this->post('/user', $data);
+    }
 
-        // Then
-        $response->assertRedirect('/home');
+    private function thenUserIsStoredAndRedirectedHome(array $data): void
+    {
+        $this->response->assertRedirect('/home');
         $this->assertDatabaseHas('users', [
             'email' => $data['email'],
             'name' => $data['name'],
@@ -62,13 +77,13 @@ Every one of these needs feature tests before it ships:
 ## Database isolation
 
 Tests run inside a transaction that is rolled back after each test, so one test cannot
-affect another — no manual DB cleanup under **Then**.
+affect another — no manual DB cleanup in `then*` steps.
 
 ## TestData classes (fixture data)
 
 Put sample data (API payloads, raw responses, data variants) in `Tests\TestData\...`
 classes with static methods, not inline in the test. This keeps test logic separate from
-test data and lets tests reuse the same variants. Loading it belongs under **Given**.
+test data and lets tests reuse the same variants. Loading it belongs in a `given*` step.
 
 ```php
 namespace Tests\TestData\Shopify\Inventory;
@@ -100,22 +115,36 @@ class InventoryLevelTestData
 ```
 
 ```php
-public function test_get_inventory_levels(): void
+public function testGetInventoryLevels(): void
 {
-    // Given
-    $inventoryLevelResponse = InventoryLevelTestData::getInventoryLevelsResponse();
+    $shopifyResponse = $this->givenShopifyReturnsInventoryLevels();
+
+    $this->whenInventoryLevelsAreFetched(locationId: 87324);
+
+    $this->thenInventoryLevelsMatch($shopifyResponse);
+}
+
+private function givenShopifyReturnsInventoryLevels(): array
+{
+    $response = InventoryLevelTestData::getInventoryLevelsResponse();
     Http::fake([
-        '*.myshopify.com/admin/api/*/inventory_levels.json*' => Http::response($inventoryLevelResponse),
+        '*.myshopify.com/admin/api/*/inventory_levels.json*' => Http::response($response),
     ]);
 
-    // When
-    $inventoryLevels = $this->inventoryClient->getInventoryLevels(87324);
+    return $response;
+}
 
-    // Then
-    $this->assertIsArray($inventoryLevels);
+private function whenInventoryLevelsAreFetched(int $locationId): void
+{
+    $this->inventoryLevels = $this->inventoryClient->getInventoryLevels($locationId);
+}
+
+private function thenInventoryLevelsMatch(array $shopifyResponse): void
+{
+    $this->assertIsArray($this->inventoryLevels);
     $this->assertEquals(
-        $inventoryLevelResponse['inventory_levels'][0]['inventory_item_id'],
-        $inventoryLevels[0]['inventory_item_id'],
+        $shopifyResponse['inventory_levels'][0]['inventory_item_id'],
+        $this->inventoryLevels[0]['inventory_item_id'],
     );
 }
 ```
@@ -130,28 +159,37 @@ return value — status, persisted state, dispatched jobs/events, side effects.
 Use Mockery to stand in for databases or external services so the test focuses on the code
 under test. Mocks must reflect the real dependency's behaviour, and **must verify incoming
 parameters** (`withArgs` / `with`) and call counts (`times`), not just stub return values.
-The mock setup is a precondition, so it goes under **Given**; the `times()` expectations are
-verified automatically at teardown.
+Prefer a spy (`$this->spy(...)`) so stubbing goes in a `given*` step and the
+`shouldHaveReceived()->withArgs()->times()` verification goes in a `then*` step — the
+expected outcome stays visible in the test body instead of hiding in up-front mock
+expectations.
 
 ```php
-public function test_purchase_sends_one_paid_plan_and_two_recurring_events(): void
+public function testPurchaseSendsOnePaidPlanAndTwoRecurringEvents(): void
 {
-    // Given
-    $this->mock(ImpactApiClient::class, function (MockInterface $mock) {
-        $mock->shouldReceive('sendTrackingConversionEvent')
-            ->withArgs(fn ($event) => $event instanceof PaidPlanPurchaseEvent)
-            ->times(1);
+    $this->givenImpactApiIsSpied();
 
-        $mock->shouldReceive('sendTrackingConversionEvent')
-            ->withArgs(fn ($event) => $event instanceof RecurringSubscriptionEvent)
-            ->times(2);
-    });
+    $this->whenPurchaseIsHandled();
 
-    // When
+    $this->thenConversionEventsAreSent(PaidPlanPurchaseEvent::class, times: 1);
+    $this->thenConversionEventsAreSent(RecurringSubscriptionEvent::class, times: 2);
+}
+
+private function givenImpactApiIsSpied(): void
+{
+    $this->impactApi = $this->spy(ImpactApiClient::class);
+}
+
+private function whenPurchaseIsHandled(): void
+{
     $this->service->handlePurchase($this->subscription());
+}
 
-    // Then
-    // (expectations above are verified by Mockery on teardown)
+private function thenConversionEventsAreSent(string $eventClass, int $times): void
+{
+    $this->impactApi->shouldHaveReceived('sendTrackingConversionEvent')
+        ->withArgs(fn ($event) => $event instanceof $eventClass)
+        ->times($times);
 }
 ```
 
@@ -161,4 +199,4 @@ public function test_purchase_sends_one_paid_plan_and_two_recurring_events(): vo
   environment must be fresh for the next test.
 - **Cover the bases:** every component type in the mandatory list above.
 - **Detail your tests:** a short comment on *why* a test exists (above the method, not
-  inside the GWT sections) saves time later.
+  inside the test body) saves time later.

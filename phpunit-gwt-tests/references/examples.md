@@ -3,84 +3,131 @@
 ## Multi-step Given (reaching a starting state via prior calls)
 
 ```php
-public function test_ringing_the_bell_on_an_existing_favourite_updates_it_in_place(): void
+public function testRingingTheBellOnAnExistingFavouriteUpdatesItInPlace(): void
 {
-    // Given
-    $lot = $this->eligibleLot();
+    $lot = $this->givenEligibleLot();
+    $this->givenLotIsFavourited($lot);
+
+    $this->whenBellIsRungFor($lot);
+
+    $this->thenFavouriteWasUpdatedNotCreated();
+    $this->thenNotificationsAreEnabled();
+}
+
+private function givenEligibleLot(): AuctionObject
+{
+    return AuctionObject::factory()->eligible()->create();
+}
+
+private function givenLotIsFavourited(AuctionObject $lot): void
+{
     $this->service->addForCustomer(self::LINKED_SUB, 99, $lot->rambase_id, $this->tenantId('skanfil'));
+}
 
-    // When
-    $result = $this->service->setNotifyForCustomer(self::LINKED_SUB, 99, $lot->rambase_id, $this->tenantId('skanfil'), true);
+private function whenBellIsRungFor(AuctionObject $lot): void
+{
+    $this->result = $this->service->setNotifyForCustomer(
+        self::LINKED_SUB,
+        99,
+        $lot->rambase_id,
+        $this->tenantId('skanfil'),
+        notify: true,
+    );
+}
 
-    // Then
-    $this->assertFalse($result['created']);
+private function thenFavouriteWasUpdatedNotCreated(): void
+{
+    $this->assertFalse($this->result['created']);
     $this->assertDatabaseCount('watchlist_items', 1);
+}
+
+private function thenNotificationsAreEnabled(): void
+{
     $this->assertDatabaseHas('watchlist_items', ['notify_enabled' => true]);
 }
 ```
 
-The setup call (`addForCustomer`) uses the same service as the call under test
-(`setNotifyForCustomer`) but is not what this test verifies, so it stays under **Given**.
+`givenLotIsFavourited` calls the same service as the action under test, but it is not what
+this test verifies, so it is a Given step.
 
-## Repository/unit test with a mock collaborator
+## Unit test with a collaborator spy
 
-Unit tests (not feature tests) may mock a collaborator. The mock expectation is part of the
-precondition, so it goes under **Given**; only the call being verified goes under **When**.
+Unit tests (not feature tests) may replace a collaborator. Prefer a spy so the setup lives in
+Given and the verification lives in Then, instead of hiding the outcome in a mock
+expectation registered up front.
 
 ```php
-public function test_sync_dispatches_one_job_per_page(): void
+public function testSyncDispatchesOneJobPerPage(): void
 {
-    // Given
-    $client = $this->createMock(RamBaseClient::class);
-    $client->expects($this->exactly(2))
-        ->method('fetchPage')
-        ->willReturnOnConsecutiveCalls($this->pageOne(), $this->pageTwo());
-    $service = new SyncService($client);
+    $this->givenRamBaseReturnsPages($this->pageOne(), $this->pageTwo());
 
-    // When
-    $service->run();
+    $this->whenSyncRuns();
 
-    // Then
-    Queue::assertPushed(SyncPageJob::class, 2);
+    $this->thenSyncPageJobsAreDispatched(2);
+}
+
+private function givenRamBaseReturnsPages(array ...$pages): void
+{
+    $this->client = $this->createMock(RamBaseClient::class);
+    $this->client->method('fetchPage')->willReturnOnConsecutiveCalls(...$pages);
+}
+
+private function whenSyncRuns(): void
+{
+    (new SyncService($this->client))->run();
+}
+
+private function thenSyncPageJobsAreDispatched(int $count): void
+{
+    Queue::assertPushed(SyncPageJob::class, $count);
 }
 ```
 
 ## HTTP feature test
 
 ```php
-public function test_creating_a_saved_search_returns_201(): void
+public function testCreatingASavedSearchReturns201(): void
 {
-    // Given
-    $user = User::factory()->create();
+    $user = $this->givenUser();
 
-    // When
-    $response = $this->actingAs($user)
-        ->postJson('/api/v1/saved-searches', ['name' => 'My search', 'criteria' => []]);
+    $this->whenSavedSearchIsCreatedBy($user, name: 'My search');
 
-    // Then
-    $response->assertStatus(Response::HTTP_CREATED);
-    $this->assertDatabaseHas('saved_searches', ['name' => 'My search']);
+    $this->thenSavedSearchIsStored('My search');
+}
+
+private function givenUser(): User
+{
+    return User::factory()->create();
+}
+
+private function whenSavedSearchIsCreatedBy(User $user, string $name, array $criteria = []): void
+{
+    $this->response = $this->actingAs($user)
+        ->postJson('/api/v1/saved-searches', ['name' => $name, 'criteria' => $criteria]);
+}
+
+private function thenSavedSearchIsStored(string $name): void
+{
+    $this->response->assertStatus(Response::HTTP_CREATED);
+    $this->assertDatabaseHas('saved_searches', ['name' => $name]);
 }
 ```
 
 ## Data provider
 
+The provider is the parameterised Given; its values flow straight into the steps.
+
 ```php
 /**
  * @dataProvider invalidCriteriaProvider
  */
-public function test_invalid_criteria_is_rejected(array $criteria, string $expectedError): void
+public function testInvalidCriteriaIsRejected(array $criteria, string $expectedError): void
 {
-    // Given
-    $user = User::factory()->create();
+    $user = $this->givenUser();
 
-    // When
-    $response = $this->actingAs($user)
-        ->postJson('/api/v1/saved-searches', ['name' => 'x', 'criteria' => $criteria]);
+    $this->whenSavedSearchIsCreatedBy($user, name: 'x', criteria: $criteria);
 
-    // Then
-    $response->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY);
-    $response->assertJsonValidationErrors($expectedError);
+    $this->thenValidationFailsOn($expectedError);
 }
 
 public static function invalidCriteriaProvider(): array
@@ -89,5 +136,42 @@ public static function invalidCriteriaProvider(): array
         'missing category' => [['brand' => 'skanfil'], 'criteria.category'],
         'unknown brand' => [['category' => 'x', 'brand' => 'nope'], 'criteria.brand'],
     ];
+}
+
+private function thenValidationFailsOn(string $field): void
+{
+    $this->response->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY);
+    $this->response->assertJsonValidationErrors($field);
+}
+```
+
+`givenUser` and `whenSavedSearchIsCreatedBy` are the same steps as the HTTP example above —
+reuse them within the class rather than writing variants.
+
+## Class layout
+
+Tests first, then steps grouped Given → When → Then. The When result lives in a private
+property.
+
+```php
+class SavedSearchControllerTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private TestResponse $response;
+
+    public function testCreatingASavedSearchReturns201(): void { /* ... */ }
+
+    public function testInvalidCriteriaIsRejected(array $criteria, string $expectedError): void { /* ... */ }
+
+    public static function invalidCriteriaProvider(): array { /* ... */ }
+
+    private function givenUser(): User { /* ... */ }
+
+    private function whenSavedSearchIsCreatedBy(User $user, string $name, array $criteria = []): void { /* ... */ }
+
+    private function thenSavedSearchIsStored(string $name): void { /* ... */ }
+
+    private function thenValidationFailsOn(string $field): void { /* ... */ }
 }
 ```
