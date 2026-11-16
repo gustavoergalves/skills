@@ -1,196 +1,189 @@
 ---
 name: code-review-multi-agents
-description: "Multi-agent code review of staged git changes: dispatches 5 parallel specialist reviewers (bugs/logic, security, performance, design/maintainability, test coverage) and synthesizes a deduplicated, severity-ranked report with a verdict in data/code-review/. Use when asked to review staged changes, run a multi-agent review, or get an APPROVE/REQUEST CHANGES verdict before committing."
+description: "Multi-agent code review of a branch (default: the branch vs its base plus uncommitted changes; or only staged changes when asked): reads the ticket requirements, lists the feature's invariants, dispatches 5 parallel specialist reviewers (bugs/logic, invariants & state over time, design/maintainability, test coverage, security & performance), verifies every finding against the code, and writes a severity-ranked report with a verdict in data/code-review/. Use when asked to review a branch or staged changes, run a multi-agent review, or get an APPROVE/REQUEST CHANGES verdict before opening or updating a PR."
 allowed-tools: [Bash, Read, Glob, Grep, Agent, Write, Edit]
 ---
 
 # Multi-Agent Code Review
 
-You are the **Review Coordinator**. Your job is to orchestrate a team of specialized review agents that analyze the staged git diff in parallel, then synthesize their findings into a single actionable report.
+You are the **Review Coordinator**. You gather what the change is supposed to do, have specialist agents review it
+in parallel, check their findings against the code yourself, and write one report that puts what decides the verdict on
+top.
 
-## Phase 1: Context Gathering
+Most review misses are not caused by a reviewer failing to see a case. They happen when a case is seen, filed as a
+minor test gap, and lost among dozens of low findings. Classification and verification matter as much as detection.
 
-Before dispatching agents, collect the review context:
+## Phase 1: Context
 
-1. Run `git diff --staged --stat` to get the list of changed files and scope
-2. Run `git diff --staged` to get the full diff
-3. Identify the project language, framework, and test tooling from the repo root (package.json, pyproject.toml, Cargo.toml, go.mod, etc.)
-4. If a CLAUDE.md or project conventions file exists at the repo root, read it for project-specific rules
+1. **Scope.** Default: the whole branch against its base, plus uncommitted changes.
+   - Base: `git symbolic-ref --short refs/remotes/origin/HEAD` (fall back to `origin/main`), then
+     `BASE=$(git merge-base <base> HEAD)`.
+   - Diff: `git diff $BASE --stat` and `git diff $BASE` (this includes staged and unstaged work).
+   - Only when the user asks for staged changes: `git diff --staged`.
+   - If the diff is empty, say so and stop.
+2. **Requirements.** Take the ticket ID from the branch name or commit subjects (e.g. `BE-819`).
+   - Read `data/jira/<ID>/index.md` when it exists; otherwise fetch the ticket (the `jira-to-md` skill or the
+     Atlassian MCP). Read any PRD or spec it links to that is in the repo.
+   - If a PR exists for the branch (`gh pr view --json number,body,url`), read its description and its review comments
+     (`gh api repos/{owner}/{repo}/pulls/<n>/comments` and `.../reviews`). Comments already answered are context;
+     unanswered ones must be checked.
+   - No ticket found: say so in the report and derive the requirements from the commit messages and docblocks.
+3. **Conventions.** Read `AGENTS.md` / `CLAUDE.md` at the repo root and the rule skills they point to for the changed
+   areas.
+4. **Past misses.** Read [references/past-misses.md](references/past-misses.md): patterns human reviewers caught that
+   earlier reviews missed.
+5. **Invariants.** Before dispatching, write the list of promises the change makes, one line each, from the
+   requirements and the code's own docblocks. Examples: "an opted-in store's order never ships split", "a paid line is
+   never re-routed", "the reason never gates fulfillment". Include the promises of existing rules the change touches.
+   Aim for 3–10. This list goes to every agent and heads the report.
 
-Store these facts — you will pass them as context to each agent.
+## Phase 2: Dispatch the specialists
 
-## Output root
+Launch the **5 agents in parallel** (one message, five Agent calls). Give each one:
+- the diff, the file list and the base commit;
+- the requirements summary and the invariant list;
+- the project conventions that apply;
+- the past-misses patterns (agents 1 and 2);
+- this rule: **you may read any file in the repository** (whole changed files, callers, sibling rules, older code
+  in the same flow). Report only issues the change introduces or exposes. A pre-existing rule counts when the change
+  makes it reachable in a new way.
 
-All files this skill writes go under `data/` at the root of the project the agent is running in (the current working directory) — never the project root or any other folder. Create `data/code-review/` if it does not exist.
+Every agent uses this finding format:
 
-## Phase 2: Dispatch Specialist Agents
-
-Launch the following **5 agents in parallel** using the Agent tool (all in a single message so they run concurrently). Each agent receives the full staged diff and project context, but focuses exclusively on its domain.
-
-Pass each agent the staged diff content and the file list directly in its prompt — do NOT ask agents to run git commands themselves.
-
-### Agent 1: Bug & Logic Reviewer
 ```
-You are a senior software engineer focused on correctness.
-Review the following staged diff for:
-- Logic errors and off-by-one mistakes
-- Incorrect control flow (wrong conditions, missing breaks, unreachable code)
-- Type mismatches and null/undefined dereference risks
-- Race conditions and concurrency issues
-- Incorrect error handling (swallowed exceptions, wrong error types)
-- Misuse of APIs or library functions
-
-For each issue found, output EXACTLY this format:
-### [SEVERITY] file:line — Short title
-**Explanation**: What is wrong and why it matters
-**Suggested fix**: Concrete code change or approach
-
-Severity levels: CRITICAL, HIGH, MEDIUM, LOW
-If no issues found, state "No issues found" and briefly note what you verified.
-```
-
-### Agent 2: Security Reviewer
-```
-You are an application security specialist (OWASP Top 10, CWE).
-Review the following staged diff for:
-- Injection vulnerabilities (SQL, XSS, command injection, template injection)
-- Authentication and authorization flaws
-- Sensitive data exposure (secrets, PII in logs, hardcoded credentials)
-- Insecure deserialization or input handling
-- Missing input validation at trust boundaries
-- Insecure cryptographic usage or random number generation
-- CSRF, SSRF, and open redirect risks
-
-For each issue found, output EXACTLY this format:
-### [SEVERITY] file:line — Short title
-**CWE**: CWE-ID if applicable
-**Explanation**: What the vulnerability is and how it could be exploited
-**Suggested fix**: Concrete remediation with code
-
-Severity levels: CRITICAL, HIGH, MEDIUM, LOW
-If no issues found, state "No issues found" and briefly note what you verified.
+### [SEVERITY] [CATEGORY] file:line — Short title
+**Scenario**: the concrete inputs or sequence of events, and what the code does, with file:line for each step
+**Why it matters**: which invariant or requirement it breaks, or the concrete cost
+**Suggested fix**: a concrete change
 ```
 
-### Agent 3: Performance & Resource Reviewer
+CATEGORY is one of `correctness`, `invariant`, `design`, `test-gap`, `security`, `performance`, `question`.
+Severity levels: CRITICAL, HIGH, MEDIUM, LOW. If nothing is found, say "No issues found" and list what was checked.
+
+### Agent 1: Bugs & logic
+
 ```
-You are a performance engineer focused on efficiency and scalability.
-Review the following staged diff for:
-- Algorithm complexity issues (O(n²) where O(n) is possible, unnecessary iterations)
-- N+1 query patterns and missing database indexes
-- Memory leaks (unclosed resources, event listener accumulation, unbounded caches)
-- Unnecessary allocations in hot paths
-- Missing pagination or unbounded data fetching
-- Blocking operations on main thread / event loop
-- Redundant computations that could be memoized or cached
-
-For each issue found, output EXACTLY this format:
-### [SEVERITY] file:line — Short title
-**Impact**: Estimated performance impact (latency, memory, CPU)
-**Explanation**: What is inefficient and under what conditions it degrades
-**Suggested fix**: Concrete optimization with code
-
-Severity levels: CRITICAL, HIGH, MEDIUM, LOW
-If no issues found, state "No issues found" and briefly note what you verified.
+You are a senior engineer focused on correctness. Review the change for logic errors, wrong conditions,
+null/blank/unloaded-relation handling, wrong error handling, misuse of framework APIs, concurrency and
+ordering problems. Read the callers of every changed public method and check each one still gets what it
+expects. Check the past-misses patterns against this change.
 ```
 
-### Agent 4: Design & Maintainability Reviewer
+### Agent 2: Invariants & state over time
+
 ```
-You are a senior engineer focused on code quality and long-term maintainability.
-Review the following staged diff for:
-- Breaking changes to public APIs or interfaces (changed signatures, removed fields, renamed exports)
-- Backward compatibility issues
-- Violations of DRY, SRP, and other SOLID principles
-- Overly complex functions (high cyclomatic complexity, deep nesting)
-- Poor naming that hinders readability
-- Missing or misleading error messages
-- Inconsistency with surrounding code patterns and project conventions
+You check that the change keeps the feature's promises for every input and over time.
 
-Use the project conventions provided to judge style violations accurately.
+1. Decision tables. For every condition the diff adds or changes (if, match, filter/partition/reject,
+   early return, query where), list the inputs on each side, including null, blank, unknown, zero, an
+   unloaded relation and a store/setting turned off. Trace what the code does for each row, including in
+   the branch the diff did not touch.
+2. Values that change later. For every input that can change after the first decision (an address arriving,
+   stock, product links, store settings, payment, cancellation, an added line), trace two events: the first
+   with the old value, the second with the new one. Focus on actions that are not undone later (a write that
+   is kept, a swap that is not reversed, an email, a charge). Can the first event commit to one while the
+   information is still incomplete?
+3. Neighbouring rules. Find the existing rules in the same flow (sibling services, flags, enums, older tickets
+   named in docblocks) and work out how the new rule combines with each: which runs first, which one wins,
+   whether one undoes or blocks the other.
+4. Check every invariant against the rows and sequences above.
 
-For each issue found, output EXACTLY this format:
-### [SEVERITY] file:line — Short title
-**Explanation**: What the design issue is and why it matters for maintainability
-**Suggested fix**: Concrete improvement with code or refactoring approach
-
-Severity levels: CRITICAL, HIGH, MEDIUM, LOW
-If no issues found, state "No issues found" and briefly note what you verified.
-```
-
-### Agent 5: Test Coverage Reviewer
-```
-You are a QA engineer focused on test adequacy.
-Review the following staged diff for:
-- New public functions, methods, or endpoints that lack corresponding tests
-- Changed behavior that is not covered by updated tests
-- Edge cases in the diff that are not tested (empty inputs, boundary values, error paths)
-- Test quality issues (tests that don't assert meaningful behavior, flaky patterns)
-- Missing integration or contract tests for new API boundaries
-- Removed or weakened test assertions
-
-Cross-reference the diff against any test files in the changeset.
-
-For each gap found, output EXACTLY this format:
-### [SEVERITY] file:line — Short title
-**What to test**: Specific test case description
-**Why it matters**: What could break without this test
-**Suggested test**: Skeleton test code or approach
-
-Severity levels: HIGH, MEDIUM, LOW
-If coverage looks adequate, state "Coverage adequate" and note what is well-tested.
+Report a case only when it breaks an invariant or the requirements (CATEGORY invariant), or when the
+requirements say nothing and the outcome would surprise the product owner (CATEGORY question). Each
+report gives the concrete sequence of events and the final outcome.
 ```
 
-## Phase 3: Synthesize Report
+### Agent 3: Design & maintainability
 
-After all 5 agents complete, combine their findings into a unified report. Apply these rules:
+```
+You review long-term maintainability against the project's conventions: breaking changes to public
+interfaces, mechanisms or states the requirements do not need, duplication of an existing helper,
+names that mislead, and inconsistency with the surrounding code. Do not suggest style changes the
+project's conventions contradict.
+```
 
-1. **Deduplicate**: If multiple agents flagged the same line/issue, merge into one entry and note which domains it affects
-2. **Sort by severity**: CRITICAL first, then HIGH, MEDIUM, LOW
-3. **Add summary stats**: Total issues by severity, files with most issues
-4. **Add verdict**: APPROVE, REQUEST CHANGES, or NEEDS DISCUSSION based on:
-   - Any CRITICAL → REQUEST CHANGES
-   - 3+ HIGH → REQUEST CHANGES
-   - Only MEDIUM/LOW → APPROVE with suggestions
-   - Ambiguous trade-offs → NEEDS DISCUSSION
+### Agent 4: Test coverage
 
-Write the final report to `data/code-review/YYYY-MM-DD-HHMM.md` (local time) using this structure, then print the verdict, the severity table and the path to the report:
+```
+You review test adequacy: changed behaviour without a test, untested edge cases, tests that do not
+assert what they claim, weakened assertions.
+
+For every untested case, first answer: what does the code do in that case today, and is that what the
+requirements and invariants want? If the outcome is wrong, report it as CATEGORY correctness or
+invariant with the scenario, not as a test gap. Report a test-gap only when the current behaviour is
+right and just unprotected.
+```
+
+### Agent 5: Security & performance
+
+```
+You review security (injection, authorization, data exposure, input validation at trust boundaries) and
+performance (N+1 queries, unbounded loads, queries without a usable index, work repeated in loops) of
+the change. Report only issues with a concrete trigger in this code. Say "No issues found" otherwise.
+```
+
+## Phase 3: Verify and classify
+
+Before you write anything, go through the findings yourself:
+
+1. **Reclassify by outcome.** A finding from any agent whose scenario ends in an outcome that breaks an invariant or
+   requirement is a `correctness`/`invariant` finding, **at least HIGH**, whatever category or severity the agent gave
+   it. This includes test gaps, design notes and questions.
+2. **Verify** every CRITICAL, HIGH and MEDIUM finding by tracing its scenario through the code, file by file. When a
+   test is cheap to write, run one that reproduces it. Mark each finding `CONFIRMED`, or drop it with one line saying
+   why. Do not keep unverified findings above LOW.
+3. **Deduplicate.** Merge findings about the same cause and note which agents raised them.
+4. **Weigh materiality.** Downgrade findings whose trigger cannot happen in practice (say what rules it out) or whose
+   cost is negligible. Keep a finding only if it would change what the author does.
+
+## Phase 4: Report
+
+Write `data/code-review/YYYY-MM-DD-HHMM.md` (local time; create `data/code-review/` if needed). Write the report in the
+language the user is using.
 
 ```markdown
 # Code Review Report
 
 **Date**: YYYY-MM-DD
-**Scope**: N files changed (+additions / -deletions)
-**Verdict**: [APPROVE | REQUEST CHANGES | NEEDS DISCUSSION]
+**Scope**: <branch> vs <base> (<base sha>), N files (+a / -d)[, plus uncommitted changes]
+**Requirements**: <ticket ID and title, or "no ticket found">
+**Verdict**: APPROVE | REQUEST CHANGES | NEEDS DISCUSSION — one sentence saying why
 
-## Summary
+## Invariants
 
-| Severity | Count |
-|----------|-------|
-| Critical | N     |
-| High     | N     |
-| Medium   | N     |
-| Low      | N     |
+| # | Invariant | Holds? | Evidence |
+|---|-----------|--------|----------|
+| 1 | ... | ✅ / ❌ (finding id) / ❓ (unverified, why) | file:line or test name |
 
-## Critical & High Priority
+## Open PR comments
 
-(merged findings here)
+(only when the PR has review comments: each one, whether the code answers it, evidence)
 
-## Medium & Low Priority
+## Findings that decide the verdict
 
-(merged findings here)
+(CRITICAL and HIGH, CONFIRMED, each with its scenario)
 
-## Test Coverage Assessment
+## Other findings
 
-(Agent 5 findings here)
+(MEDIUM in full; LOW as one line each)
 
-## Files Reviewed
+## Questions for the product owner
 
-- file1.ext (domains: security, performance)
-- file2.ext (domains: logic, design)
+## Dropped findings
+
+(one line each: what was raised and why it does not hold)
 ```
 
-## Constraints
+Verdict:
+- Any ❌ invariant, or any CRITICAL → REQUEST CHANGES.
+- Any HIGH → REQUEST CHANGES unless the author accepted the trade-off explicitly in the ticket or PR.
+- Open product questions whose answer changes the code → NEEDS DISCUSSION.
+- Otherwise → APPROVE (with the MEDIUM/LOW as suggestions).
 
-- Do NOT review files that are not in the staged diff
-- Do NOT suggest style changes that contradict the project's existing conventions
-- Keep suggested fixes concrete — show code, not vague advice
-- If the diff is empty, report that and exit early
+Then print the verdict, the invariant table, the deciding findings and the report path.
+
+## Phase 5: Learn from human reviews
+
+When a human reviewer later raises something this review missed or underrated, add an entry to
+[references/past-misses.md](references/past-misses.md): the pattern in general terms, how to spot it, and why the
+review missed it. Do not record the specific bug.
